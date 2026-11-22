@@ -203,7 +203,21 @@ button:focus-visible { outline: 3px solid #125a82; outline-offset: 2px; z-index:
 }
 .send:disabled { background: transparent; color: var(--muted); font-weight: 500; }
 .send[data-ready="true"] { background: #dfebe2; color: #214f3d; }
+.send[aria-expanded="true"] { background: #eee0cc; color: #643b31; }
 .send:active:not(:disabled), .secondary:active:not(:disabled) { filter: brightness(.91); }
+
+.send-confirm {
+  display: grid;
+  gap: 3px;
+  margin-block: -2px;
+  padding: 3px 6px 4px;
+  border: 1px solid #aa9278;
+  border-radius: 3px;
+  background: var(--fiber), var(--paper);
+}
+.send-confirm p { font-size: 12px; line-height: 1.35; }
+.send-confirm .secondary { min-height: 44px; font-size: 13px; }
+.send-confirm .confirm-send { border-color: var(--red); background: #f5e4d7; color: #782e2b; }
 
 .stamp-block { display: grid; gap: 5px; }
 .stamps {
@@ -357,7 +371,7 @@ function stampBlock(state) {
   const stamp = nextStamp(state);
   if (atCounter(state).length === 1) return "柜台只剩一封，寄出后即可结算。";
   if (!stamp) return "印章已用完，可以继续寄信。";
-  if (state.desk.includes(null)) return "先选两封信，点已选的信可取回。";
+  if (state.desk.includes(null)) return "点信签选两封一起盖印，再点同一封可取回。";
   const occupied = state.desk.find(id => state.ink[id][stamp.row]);
   return occupied ? `${LETTERS[occupied].name}${ROWS[stamp.row]}已有墨，换一封再盖。` : "";
 }
@@ -401,6 +415,28 @@ const game = document.querySelector("#game");
 const announce = document.querySelector("#announce");
 let state = newBag();
 let notice = "";
+let pendingSend = null;
+
+function requiresSendConfirmation(id) {
+  return state.sent.length < ORDERS.length - 1 && Boolean(nextStamp(state)) && unmet(state, id).length > 0;
+}
+
+function sendWarning(id) {
+  const incoming = ORDERS[state.sent.length + 3];
+  return `寄出${LETTERS[id].name}后就不能再盖。${incoming ? `${incoming.name}会补位。` : ""}`;
+}
+
+function sendConfirmation() {
+  if (!pendingSend) return "";
+  return `<section class="send-confirm" id="send-confirm" data-letter="${pendingSend}" aria-label="提前寄出确认">
+    <p>${sendWarning(pendingSend)}</p>
+    <div class="actions">
+      <button type="button" class="secondary" data-action="cancel-send" data-id="${pendingSend}">取消寄出</button>
+      <button type="button" class="secondary confirm-send" data-action="confirm-send" data-id="${pendingSend}">
+        确认寄出${LETTERS[pendingSend].name}</button>
+    </div>
+  </section>`;
+}
 
 function wishCopy(letter, rows = [0, 1]) {
   return rows.filter(row => letter.wish[row] !== "any")
@@ -452,6 +488,8 @@ function sheet(id, index, preview, recentlyPressed) {
     <div class="paperhead"><h3>${plate}${letter ? `　${letter.name}` : ""}</h3></div>
     ${rows}
     <button class="send" data-action="send" data-id="${id ?? ""}" data-ready="${Boolean(id && !missing)}"
+      ${id && requiresSendConfirmation(id) ? `aria-expanded="${pendingSend === id}"` : ""}
+      ${id && pendingSend === id ? 'aria-controls="send-confirm"' : ""}
       ${id ? `aria-label="寄出${letter.name}，${missing ? `差 ${missing} 处` : "已满足"}"` : "disabled"}>
       ${id ? `寄出 · ${missing ? `差 ${missing} 处` : "已满足"}` : "等候上台"}</button>
   </article>`;
@@ -490,7 +528,7 @@ function render(recentlyPressed = false) {
   const done = state.sent.length === ORDERS.length;
   const matched = state.sent.filter(id => unmet(state, id).length === 0).length;
   const header = `<header class="mast">
-    <div class="brand"><h1>落印邮局</h1><small>骑缝章</small></div>
+    <div class="brand"><h1 tabindex="-1">落印邮局</h1><small>骑缝章</small></div>
     <div class="docket"><strong>第 ${state.bag + 1} 袋 · ${bag.name}</strong>
       <span>已寄 ${state.sent.length} / ${ORDERS.length}</span></div>
   </header>`;
@@ -517,10 +555,10 @@ function render(recentlyPressed = false) {
       ? [`${LETTERS[id].name}${ROWS[preview.row]}想要${MARKS[LETTERS[id].wish[preview.row]]}`] : [];
   }) : [];
   const hint = risks.length
-    ? `${risks.join("，")}。落墨后不能改。`
+    ? `${risks.join("，")}。${pendingSend ? "" : "落墨后不能改。"}`
     : notice || blocked || "落墨后不能改。寄出一封，候补补上一封。";
   game.innerHTML = `${header}
-    <p class="intro">点信签上台，一枚章同时印上左右两张纸。</p>
+    <p class="intro">让收信人尽量如愿。五封寄完即结算。</p>
     <div class="mail" role="group" aria-label="柜台信签">${ready.map(ticket).join("")}</div>
     <p class="incoming"><b>候补</b>
       ${incoming.length ? incoming.map(letter => `<span>${letter.name} ${wishCopy(letter).join("、")}</span>`).join("") : "已全部到柜台"}
@@ -528,13 +566,14 @@ function render(recentlyPressed = false) {
     <section class="station" aria-label="骑缝印台">
       ${state.desk.map((id, side) => sheet(id, side, preview, recentlyPressed)).join("")}
     </section>
+    ${sendConfirmation()}
     <section class="stamp-block" aria-label="章序与盖印提示">
       <ol class="stamps"><li class="stamp-label">章序</li>
       ${bag.chain.map((id, index) => `<li class="stamp-item" data-used="${index < state.used}"
         ${index === state.used ? 'aria-current="step"' : ""} style="--ink-tone:var(--${STAMPS[id].tone})"
         aria-label="${STAMPS[id].name}${index < state.used ? "，已用" : ""}">${STAMPS[id].name}</li>`).join("")}</ol>
-      <p class="stamp-meta">${stamp ? `${ROWS[stamp.row]} · 左 ${MARKS[stamp.halves[0]]} ｜ 右 ${MARKS[stamp.halves[1]]}` : "还可寄出余下的信"}</p>
-      <p class="hint${risks.length ? " risk" : ""}">${hint}</p>
+      ${pendingSend && risks.length ? "" : `<p class="stamp-meta">${stamp ? `${ROWS[stamp.row]} · 左 ${MARKS[stamp.halves[0]]} ｜ 右 ${MARKS[stamp.halves[1]]}` : "还可寄出余下的信"}</p>`}
+      ${!pendingSend || risks.length ? `<p class="hint${risks.length ? " risk" : ""}">${hint}</p>` : ""}
     </section>
     <div class="actions">
       <button class="secondary" data-action="swap" ${state.desk.includes(null) ? "disabled" : ""}>左右互换</button>
@@ -546,13 +585,20 @@ function render(recentlyPressed = false) {
 game.addEventListener("click", event => {
   const button = event.target.closest("button[data-action]");
   if (!button || button.disabled) return;
-  const { action, id = null } = button.dataset;
+  const { action: control, id = null } = button.dataset;
+  if ((control === "cancel-send" || control === "confirm-send") && pendingSend !== id) return;
+  const action = control === "confirm-send" ? "send" : control;
   const before = state;
   const previousStamp = nextStamp(state);
   const keepFocus = document.activeElement === button;
   notice = "";
+  pendingSend = control === "send" && requiresSendConfirmation(id) ? id : null;
 
-  if (action === "restart" || action === "next") {
+  if (pendingSend) {
+    notice = sendWarning(pendingSend);
+  } else if (action === "cancel-send") {
+    notice = `已取消寄出。${stampBlock(state) || "可以继续盖印。"}`;
+  } else if (action === "restart" || action === "next") {
     state = newBag(action === "restart" ? state.bag : (state.bag + 1) % BAGS.length);
     notice = `已打开${BAGS[state.bag].name}。先选两封信。`;
   } else {
@@ -576,12 +622,14 @@ game.addEventListener("click", event => {
     announce.textContent = `${notice}${result.textContent}`;
     return;
   }
-  const hint = document.querySelector(".hint").textContent;
-  announce.textContent = notice && hint !== notice ? `${notice}${hint}` : hint;
+  const hint = document.querySelector(".hint")?.textContent ?? "";
+  announce.textContent = notice === hint ? hint : `${notice}${hint}`;
   if (keepFocus) {
+    const focusAction = action === "cancel-send" ? "send" : control;
     const repeat = [...game.querySelectorAll("button:not(:disabled)")].find(candidate =>
-      candidate.dataset.action === action && (candidate.dataset.id ?? null) === id);
-    (repeat ?? game.querySelector(".ticket"))?.focus({ preventScroll: true });
+      candidate.dataset.action === focusAction && (candidate.dataset.id ?? null) === id);
+    const fallback = game.querySelector(control === "confirm-send" ? "h1" : ".ticket");
+    (repeat ?? fallback)?.focus({ preventScroll: true });
   }
 });
 
